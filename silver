@@ -1,0 +1,57 @@
+from pyspark import pipelines as dp
+from pyspark.sql.functions import *
+from pyspark.sql.types import *
+
+@dp.table(name="uber.silver.silver_obt")
+def silver_obt():
+
+    stg = spark.readStream.table("stg_rides")
+
+    cities = spark.read.table("map_cities")
+    vehicle_types = spark.read.table("map_vehicle_types")
+    vehicle_makes = spark.read.table("map_vehicle_makes")
+    payment_methods = spark.read.table("map_payment_methods")
+    ride_status = spark.read.table("map_ride_statuses")
+    cancel_reasons = spark.read.table("map_cancellation_reasons")
+
+    df = stg \
+        .join(cities, stg.pickup_city_id == cities.city_id, "left") \
+        .join(vehicle_types, stg.vehicle_type_id == vehicle_types.vehicle_type_id, "left") \
+        .join(vehicle_makes, stg.vehicle_make_id == vehicle_makes.vehicle_make_id, "left") \
+        .join(payment_methods, stg.payment_method_id == payment_methods.payment_method_id, "left") \
+        .join(ride_status, stg.ride_status_id == ride_status.ride_status_id, "left") \
+        .join(cancel_reasons, stg.cancellation_reason_id == cancel_reasons.cancellation_reason_id, "left")\
+        .select(
+    stg["*"],   # keep all columns from stg_rides
+    cities["city"],
+    cities["state"],
+    vehicle_types["vehicle_type"],
+    vehicle_makes["vehicle_make"],
+    payment_methods["payment_method"],
+    ride_status["ride_status"],
+    cancel_reasons["cancellation_reason"]
+)
+
+    # Replace null values
+    df = df.fillna({
+        "cancellation_reason": "Not Cancelled",
+        "driver_rating": 0,
+        "tip_amount": 0
+    })
+
+    # Convert timestamps
+    df = df \
+        .withColumn("booking_timestamp", to_timestamp("booking_timestamp")) \
+        .withColumn("pickup_timestamp", to_timestamp("pickup_timestamp")) \
+        .withColumn("dropoff_timestamp", to_timestamp("dropoff_timestamp"))
+
+    # Create derived columns
+    df = df \
+        .withColumn("ride_date", to_date("booking_timestamp")) \
+        .withColumn("ride_hour", hour("booking_timestamp"))
+
+    # Remove duplicates
+    df = df.withWatermark("booking_timestamp","1 day") \
+       .dropDuplicates(["ride_id"])
+
+    return df
